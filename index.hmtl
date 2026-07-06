@@ -1,1 +1,446 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Zone isochrone — communes atteignables</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root {
+    --ink:#10151b; --muted:#5c6a72; --line:#e2e6e4;
+    --bg:#f4f6f5; --surface:#ffffff;
+    --full:#1f8a5b; --full-fill:rgba(31,138,91,.35);
+    --partial:#e1892a; --partial-fill:rgba(225,137,42,.32);
+    --action:#0f6e7a; --action-dark:#0b5560;
+    --origin:#c2185b;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; }
+  body {
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    color:var(--ink); background:var(--bg);
+    display:flex; height:100vh; overflow:hidden;
+  }
+  .mono { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
 
+  #panel {
+    width:378px; flex:0 0 378px; height:100%;
+    background:var(--surface); border-right:1px solid var(--line);
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+  #panel header { padding:18px 20px 14px; border-bottom:1px solid var(--line); }
+  #panel header h1 { font-size:15px; letter-spacing:.02em; margin:0 0 3px; font-weight:650; }
+  #panel header p { margin:0; font-size:12px; color:var(--muted); line-height:1.5; }
+
+  #boot-error {
+    display:none; margin:14px 20px 0; padding:11px 13px; background:#fdecea;
+    border:1px solid #f2b8b2; border-radius:9px; font-size:12.5px; color:#8a2018; line-height:1.55;
+  }
+  #boot-error b { font-weight:700; }
+
+  .scroll { overflow-y:auto; padding:16px 20px 24px; flex:1; }
+
+  label.fld { display:block; font-size:11px; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--muted); margin:0 0 5px; font-weight:600; }
+  input[type=text], select {
+    width:100%; padding:9px 10px; font-size:13px; font-family:inherit;
+    border:1px solid var(--line); border-radius:7px; background:#fff; color:var(--ink);
+  }
+  input[type=text]:focus, select:focus { outline:2px solid var(--action); border-color:transparent; }
+  .row { display:flex; gap:10px; margin-top:12px; }
+  .row > div { flex:1; }
+
+  /* ---- Autocomplétion ---- */
+  .ac-wrap { position:relative; }
+  .ac-list {
+    position:absolute; top:calc(100% + 4px); left:0; right:0; z-index:1200;
+    background:#fff; border:1px solid var(--line); border-radius:9px;
+    box-shadow:0 8px 24px rgba(16,21,27,.14); max-height:244px; overflow-y:auto; display:none;
+  }
+  .ac-item { padding:9px 11px; font-size:13px; cursor:pointer; border-bottom:1px solid #f1f3f2; }
+  .ac-item:last-child { border-bottom:none; }
+  .ac-item.active, .ac-item:hover { background:#eef6f5; }
+  .ac-item small { display:block; color:var(--muted); font-size:11px; margin-top:1px; }
+
+  button#go {
+    margin-top:16px; width:100%; padding:11px; border:none; border-radius:8px;
+    background:var(--action); color:#fff; font-size:13.5px; font-weight:600; cursor:pointer; letter-spacing:.02em;
+  }
+  button#go:hover { background:var(--action-dark); }
+  button#go:disabled { opacity:.55; cursor:default; }
+
+  #status { margin-top:12px; font-size:12px; color:var(--muted); min-height:16px; line-height:1.5; }
+  #status.err { color:#b3261e; }
+
+  .legend { margin-top:20px; border-top:1px solid var(--line); padding-top:16px; display:none; }
+  .cat {
+    display:flex; align-items:center; gap:11px; padding:10px 11px; border:1px solid var(--line);
+    border-radius:9px; margin-bottom:9px; cursor:pointer; user-select:none; transition:background .12s;
+  }
+  .cat:hover { background:#fafbfa; }
+  .cat.off { opacity:.42; }
+  .swatch { width:15px; height:15px; border-radius:4px; flex:0 0 auto; }
+  .swatch.full { background:var(--full-fill); border:1.5px solid var(--full); }
+  .swatch.partial { background:var(--partial-fill); border:1.5px solid var(--partial); }
+  .cat .txt { flex:1; line-height:1.25; }
+  .cat .txt b { font-size:13px; font-weight:600; display:block; }
+  .cat .txt span { font-size:11px; color:var(--muted); }
+  .cat .count { font-size:19px; font-weight:650; }
+
+  #export {
+    display:none; margin-top:6px; width:100%; padding:9px; border:1px solid var(--line);
+    background:#fff; border-radius:8px; font-size:12.5px; font-weight:600; cursor:pointer; color:var(--ink);
+  }
+  #export:hover { background:#fafbfa; }
+
+  .lists { margin-top:18px; display:none; }
+  details { border-top:1px solid var(--line); }
+  summary { cursor:pointer; padding:11px 2px; font-size:12px; font-weight:600;
+    list-style:none; display:flex; align-items:center; gap:8px; }
+  summary::-webkit-details-marker { display:none; }
+  summary .dot { width:9px; height:9px; border-radius:50%; }
+  summary .dot.full { background:var(--full); }
+  summary .dot.partial { background:var(--partial); }
+  .clist { font-size:12.5px; padding:0 0 10px; }
+  .clist div { display:flex; justify-content:space-between; padding:3px 4px; border-radius:4px; }
+  .clist div:hover { background:#f2f5f4; }
+  .clist .pop { color:var(--muted); font-variant-numeric:tabular-nums; }
+
+  #map { flex:1; height:100%; }
+  .leaflet-popup-content { font-family:system-ui,sans-serif; font-size:13px; margin:11px 13px; }
+  .leaflet-popup-content b { display:block; margin-bottom:3px; }
+  .tag { display:inline-block; font-size:10.5px; font-weight:600; padding:1px 7px; border-radius:20px; margin-top:4px; }
+  .tag.full { background:var(--full-fill); color:#0d5637; }
+  .tag.partial { background:var(--partial-fill); color:#8a4e0e; }
+
+  @media (max-width:760px){
+    body { flex-direction:column; }
+    #panel { width:100%; flex:none; height:auto; max-height:52%; border-right:none; border-bottom:1px solid var(--line); }
+    #map { min-height:48vh; }
+  }
+</style>
+</head>
+<body>
+  <aside id="panel">
+    <header>
+      <h1>Communes atteignables en voiture</h1>
+      <p>Trace la zone accessible en un temps donné depuis un point, puis classe les communes selon qu'elles sont <b>entièrement</b> dans la zone ou <b>coupées</b> par sa limite.</p>
+    </header>
+    <div id="boot-error"></div>
+    <div class="scroll">
+      <label class="fld" for="addr">Point de départ</label>
+      <div class="ac-wrap">
+        <input type="text" id="addr" autocomplete="off" placeholder="Adresse, ville, ou « lat, lon »" value="Cherbourg-en-Cotentin" />
+        <div class="ac-list" id="ac"></div>
+      </div>
+      <div class="row">
+        <div>
+          <label class="fld" for="mins">Temps</label>
+          <select id="mins">
+            <option>10</option><option>15</option><option>20</option>
+            <option selected>30</option><option>45</option><option>60</option>
+          </select>
+        </div>
+        <div>
+          <label class="fld" for="mode">Mode</label>
+          <select id="mode">
+            <option value="car" selected>Voiture</option>
+            <option value="pedestrian">À pied</option>
+          </select>
+        </div>
+      </div>
+      <button id="go">Calculer la zone</button>
+      <div id="status"></div>
+
+      <div class="legend" id="legend">
+        <div class="cat" id="cat-full" data-layer="full">
+          <span class="swatch full"></span>
+          <span class="txt"><b>Entièrement dans la zone</b><span>toute la commune est atteignable</span></span>
+          <span class="count mono" id="n-full">0</span>
+        </div>
+        <div class="cat" id="cat-partial" data-layer="partial">
+          <span class="swatch partial"></span>
+          <span class="txt"><b>À cheval sur la limite</b><span>la commune n'est atteignable qu'en partie</span></span>
+          <span class="count mono" id="n-partial">0</span>
+        </div>
+        <button id="export">Exporter en CSV</button>
+      </div>
+
+      <div class="lists" id="lists">
+        <details open>
+          <summary><span class="dot full"></span>Entièrement dans la zone (<span id="lc-full">0</span>)</summary>
+          <div class="clist" id="list-full"></div>
+        </details>
+        <details>
+          <summary><span class="dot partial"></span>À cheval (<span id="lc-partial">0</span>)</summary>
+          <div class="clist" id="list-partial"></div>
+        </details>
+      </div>
+    </div>
+  </aside>
+  <div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/@turf/turf@7.3.5/turf.min.js"></script>
+<script>
+/* ============================================================
+   Sources (gratuites, sans clé) :
+   - Géocodage + autocomplétion : Base Adresse Nationale (api-adresse.data.gouv.fr)
+   - Isochrone                  : IGN Géoplateforme (data.geopf.fr, BD TOPO)
+   - Contours communes          : geo.api.gouv.fr (Admin Express)
+   - Classification             : Turf.js v7 (aire d'intersection / aire commune)
+   ============================================================ */
+
+const $ = id => document.getElementById(id);
+const getCss = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const status = (msg, err=false) => { const s=$('status'); if(!s)return; s.textContent=msg; s.className=err?'err':''; };
+
+/* ---- Filet de sécurité : si Leaflet/Turf ne se chargent pas (aperçu sandboxé) ---- */
+function bootError(detail){
+  const b=$('boot-error'); if(!b) return;
+  b.style.display='block';
+  b.innerHTML = "⚠️ La carte ne peut pas se charger dans cette fenêtre. "
+    + "Ouvre le fichier téléchargé <b>dans Safari ou Chrome</b> — l'aperçu intégré à l'app bloque "
+    + "les cartes et les APIs externes dont l'outil a besoin."
+    + (detail ? "<br><span class='mono' style='font-size:11px;opacity:.8'>"+detail+"</span>" : "");
+  const g=$('go'); if(g) g.disabled=true;
+}
+window.addEventListener('error', () => {
+  if (typeof L === 'undefined' || typeof turf === 'undefined') bootError();
+});
+
+let map, layers, lastResult=null;
+const coordRe = /^\s*(-?\d+[.,]?\d*)\s*,\s*(-?\d+[.,]?\d*)\s*$/;
+
+/* ===================== Autocomplétion ===================== */
+let chosen=null, acItems=[], acIndex=-1, acTimer=null, justSelected=false;
+
+function hideAC(){ const el=$('ac'); el.style.display='none'; el.innerHTML=''; acItems=[]; acIndex=-1; }
+
+function renderAC(features){
+  const el=$('ac');
+  if(!features.length){ hideAC(); return; }
+  acItems=features; acIndex=-1;
+  el.innerHTML = features.map((f,i)=>{
+    const p=f.properties;
+    return `<div class="ac-item" data-i="${i}">${p.label}<small>${p.context||''}</small></div>`;
+  }).join('');
+  el.style.display='block';
+  el.querySelectorAll('.ac-item').forEach(node=>{
+    node.addEventListener('mousedown', e=>{ e.preventDefault(); pickAC(parseInt(node.dataset.i,10)); });
+  });
+}
+
+function pickAC(i){
+  const f=acItems[i]; if(!f) return;
+  chosen={ lon:f.geometry.coordinates[0], lat:f.geometry.coordinates[1], label:f.properties.label };
+  justSelected=true; $('addr').value=chosen.label; hideAC();
+}
+
+async function fetchAC(q){
+  try{
+    const r=await fetch('https://api-adresse.data.gouv.fr/search/?limit=6&q='+encodeURIComponent(q));
+    const j=await r.json(); renderAC(j.features||[]);
+  }catch(e){ hideAC(); }
+}
+
+function wireAutocomplete(){
+  const addr=$('addr');
+  addr.addEventListener('input', ()=>{
+    if(justSelected){ justSelected=false; return; }
+    chosen=null;                                   // toute frappe invalide la sélection précédente
+    clearTimeout(acTimer);
+    const q=addr.value.trim();
+    if(q.length<3 || coordRe.test(q)){ hideAC(); return; }
+    acTimer=setTimeout(()=>fetchAC(q), 250);
+  });
+  addr.addEventListener('keydown', e=>{
+    const open=$('ac').style.display==='block';
+    if(open && e.key==='ArrowDown'){ e.preventDefault(); acIndex=Math.min(acIndex+1,acItems.length-1); highlightAC(); }
+    else if(open && e.key==='ArrowUp'){ e.preventDefault(); acIndex=Math.max(acIndex-1,0); highlightAC(); }
+    else if(e.key==='Enter'){
+      if(open && acIndex>=0){ e.preventDefault(); pickAC(acIndex); }
+      else run();
+    }
+    else if(e.key==='Escape'){ hideAC(); }
+  });
+  addr.addEventListener('blur', ()=>setTimeout(hideAC,120));
+}
+
+function highlightAC(){
+  $('ac').querySelectorAll('.ac-item').forEach((n,i)=>n.classList.toggle('active', i===acIndex));
+}
+
+/* ===================== Pipeline géo ===================== */
+async function resolvePoint(q){
+  q=q.trim();
+  if(chosen && chosen.label===q) return chosen;      // adresse choisie dans la liste
+  const m=q.match(coordRe);
+  if(m){
+    const lat=parseFloat(m[1].replace(',','.')), lon=parseFloat(m[2].replace(',','.'));
+    return { lon, lat, label:`${lat.toFixed(5)}, ${lon.toFixed(5)}` };
+  }
+  const r=await fetch('https://api-adresse.data.gouv.fr/search/?limit=1&q='+encodeURIComponent(q));
+  const j=await r.json();
+  if(!j.features || !j.features.length) throw new Error("Adresse introuvable — précise la commune ou choisis une suggestion.");
+  const f=j.features[0];
+  return { lon:f.geometry.coordinates[0], lat:f.geometry.coordinates[1], label:f.properties.label };
+}
+
+async function fetchIsochrone(lon, lat, seconds, profile){
+  const url='https://data.geopf.fr/navigation/isochrone'
+    +'?resource=bdtopo-valhalla&point='+lon+','+lat
+    +'&costType=time&costValue='+seconds+'&profile='+profile
+    +'&direction=departure&geometryFormat=geojson&crs=EPSG:4326';
+  const r=await fetch(url);
+  if(!r.ok) throw new Error("Le service isochrone IGN a répondu "+r.status+".");
+  const j=await r.json();
+  const geom=j.geometry || (j.features && j.features[0] && j.features[0].geometry);
+  if(!geom) throw new Error("Isochrone vide (point trop loin d'une route ?).");
+  return turf.feature(geom);
+}
+
+async function departmentsInBbox(bbox){
+  const [minX,minY,maxX,maxY]=bbox, N=4, pts=[];
+  for(let i=0;i<N;i++) for(let k=0;k<N;k++)
+    pts.push([ minX+(maxX-minX)*i/(N-1), minY+(maxY-minY)*k/(N-1) ]);
+  const reqs=pts.map(([lon,lat])=>
+    fetch(`https://geo.api.gouv.fr/communes?lat=${lat}&lon=${lon}&fields=codeDepartement`)
+      .then(r=>r.json()).then(a=>a[0]&&a[0].codeDepartement).catch(()=>null));
+  return [...new Set((await Promise.all(reqs)).filter(Boolean))];
+}
+
+const communeCache={};
+async function communesOfDept(dep){
+  if(communeCache[dep]) return communeCache[dep];
+  const url=`https://geo.api.gouv.fr/communes?codeDepartement=${dep}&fields=nom,code,population,contour&format=geojson&geometry=contour`;
+  const j=await (await fetch(url)).json();
+  communeCache[dep]=j.features||[]; return communeCache[dep];
+}
+
+const FULL=0.999;
+function classify(commune, iso, isoBbox){
+  const cb=turf.bbox(commune);
+  if(cb[2]<isoBbox[0]||cb[0]>isoBbox[2]||cb[3]<isoBbox[1]||cb[1]>isoBbox[3]) return 'out';
+  let inter=null;
+  try{ inter=turf.intersect(turf.featureCollection([commune, iso])); }
+  catch(e){ try{ return turf.booleanIntersects(commune,iso)?'partial':'out'; }catch(_){ return 'out'; } }
+  if(!inter) return 'out';
+  const ratio=turf.area(inter)/turf.area(commune);
+  if(ratio>=FULL) return 'full';
+  if(ratio>0) return 'partial';
+  return 'out';
+}
+
+async function run(){
+  hideAC();
+  $('go').disabled=true;
+  layers.full.clearLayers(); layers.partial.clearLayers();
+  if(layers.iso){ map.removeLayer(layers.iso); layers.iso=null; }
+  if(layers.origin){ map.removeLayer(layers.origin); layers.origin=null; }
+  $('legend').style.display='none'; $('lists').style.display='none'; $('export').style.display='none';
+
+  try{
+    const seconds=parseInt($('mins').value,10)*60, profile=$('mode').value;
+
+    status('Localisation du point…');
+    const pt=await resolvePoint($('addr').value);
+    layers.origin=L.circleMarker([pt.lat,pt.lon],
+      {radius:7,color:'#fff',weight:2,fillColor:getCss('--origin'),fillOpacity:1})
+      .addTo(map).bindPopup('<b>Départ</b>'+pt.label);
+
+    status('Calcul de la zone atteignable (IGN)…');
+    const iso=await fetchIsochrone(pt.lon, pt.lat, seconds, profile);
+    const isoBbox=turf.bbox(iso);
+    layers.iso=L.geoJSON(iso,{style:{color:'#10151b',weight:2,dashArray:'5 4',fill:false}}).addTo(map);
+    map.fitBounds(layers.iso.getBounds(),{padding:[30,30]});
+
+    status('Identification des départements concernés…');
+    const deps=await departmentsInBbox(isoBbox);
+    if(!deps.length) throw new Error("Aucun département identifié dans la zone.");
+
+    status(`Récupération des communes (${deps.join(', ')})…`);
+    let communes=[];
+    for(const d of deps) communes=communes.concat(await communesOfDept(d));
+
+    status(`Classement de ${communes.length} communes…`);
+    const full=[], partial=[];
+    for(const c of communes){
+      const cls=classify(c, iso, isoBbox);
+      if(cls==='full') full.push(c); else if(cls==='partial') partial.push(c);
+    }
+    render(full, partial);
+    lastResult={ full, partial };
+    status(`Terminé — ${full.length} entièrement dans la zone, ${partial.length} à cheval.`);
+  }catch(e){
+    status(e.message||'Erreur inattendue.', true);
+  }finally{ $('go').disabled=false; }
+}
+
+function paint(features, group, cls, color){
+  group.clearLayers();
+  for(const f of features){
+    L.geoJSON(f,{ style:{color,weight:1}, onEachFeature:(feat,lyr)=>{
+      lyr.setStyle({fillColor:color, fillOpacity: cls==='full'?.35:.32, opacity:.9});
+      const p=feat.properties;
+      lyr.bindPopup(`<b>${p.nom}</b>INSEE ${p.code}${p.population?` · ${p.population.toLocaleString('fr-FR')} hab.`:''}<br><span class="tag ${cls}">${cls==='full'?'entièrement dans la zone':'à cheval sur la limite'}</span>`);
+    }}).addTo(group);
+  }
+}
+
+function render(full, partial){
+  paint(full, layers.full, 'full', getCss('--full'));
+  paint(partial, layers.partial, 'partial', getCss('--partial'));
+  $('n-full').textContent=full.length; $('n-partial').textContent=partial.length;
+  $('lc-full').textContent=full.length; $('lc-partial').textContent=partial.length;
+  fillList('list-full', full); fillList('list-partial', partial);
+  $('legend').style.display='block'; $('lists').style.display='block'; $('export').style.display='block';
+}
+
+function fillList(id, feats){
+  const el=$(id); el.innerHTML='';
+  [...feats].sort((a,b)=>a.properties.nom.localeCompare(b.properties.nom,'fr')).forEach(f=>{
+    const d=document.createElement('div');
+    const pop=f.properties.population?f.properties.population.toLocaleString('fr-FR'):'—';
+    d.innerHTML=`<span>${f.properties.nom}</span><span class="pop mono">${pop}</span>`;
+    el.appendChild(d);
+  });
+}
+
+function wireUI(){
+  document.querySelectorAll('.cat').forEach(c=>c.addEventListener('click',()=>{
+    const key=c.dataset.layer;
+    if(map.hasLayer(layers[key])){ map.removeLayer(layers[key]); c.classList.add('off'); }
+    else { map.addLayer(layers[key]); c.classList.remove('off'); }
+  }));
+  $('export').addEventListener('click',()=>{
+    if(!lastResult) return;
+    const rows=[['nom','code_insee','population','categorie']];
+    const add=(arr,cat)=>arr.forEach(f=>rows.push([f.properties.nom,f.properties.code,f.properties.population||'',cat]));
+    add(lastResult.full,'entierement_dans_zone'); add(lastResult.partial,'a_cheval');
+    const csv=rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob(["\uFEFF"+csv],{type:'text/csv'}));
+    a.download='communes_isochrone.csv'; a.click();
+  });
+  $('go').addEventListener('click', run);
+  wireAutocomplete();
+}
+
+/* ---- Démarrage ---- */
+function boot(){
+  if(typeof L==='undefined' || typeof turf==='undefined'){ bootError(); return; }
+  try{
+    map=L.map('map',{zoomControl:true}).setView([46.7,2.4],6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      {maxZoom:19, attribution:'© OpenStreetMap'}).addTo(map);
+    layers={ iso:null, full:L.layerGroup(), partial:L.layerGroup(), origin:null };
+    layers.full.addTo(map); layers.partial.addTo(map);
+    wireUI();
+  }catch(e){ bootError(e.message); }
+}
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', boot);
+else boot();
+</script>
+</body>
+</html>
