@@ -160,7 +160,7 @@
         </div>
         <div class="cat" id="cat-partial" data-layer="partial">
           <span class="swatch partial"></span>
-          <span class="txt"><b>À cheval sur la limite</b><span>la commune n'est atteignable qu'en partie</span></span>
+          <span class="txt"><b>À cheval sur la limite</b><span>partiellement atteignable · temps au bout indiqué</span></span>
           <span class="count mono" id="n-partial">0</span>
         </div>
         <button id="export">Exporter en CSV</button>
@@ -391,6 +391,28 @@ async function run(){
       const cls=classify(c, iso, isoBbox);
       if(cls==='full') full.push(c); else if(cls==='partial') partial.push(c);
     }
+
+    // Pire cas des communes à cheval : plus petit isochrone (plus large) qui les contient ENTIÈREMENT
+    if(partial.length){
+      const baseMin=seconds/60;
+      const cap = profile==='pedestrian' ? 120 : 60;   // plafonds IGN (car 60 min, marche 120)
+      let step=5; while(Math.ceil((cap-baseMin)/step) > 6) step+=5; // ≤ 6 appels
+      const times=[]; for(let t=baseMin+step; t<=cap; t+=step) times.push(t);
+      if(times.length){
+        status(`Temps max sur ${partial.length} communes à cheval…`);
+        const ladder=(await Promise.all(times.map(min=>
+          fetchIsochrone(pt.lon, pt.lat, min*60, profile)
+            .then(f=>({min, iso:f, bbox:turf.bbox(f)})).catch(()=>null)
+        ))).filter(Boolean).sort((a,b)=>a.min-b.min);
+        for(const c of partial){
+          let maxMin=null;
+          for(const lad of ladder){ if(classify(c, lad.iso, lad.bbox)==='full'){ maxMin=lad.min; break; } }
+          c.properties.__maxMin=maxMin;   // null => au-delà du plafond
+          c.properties.__cap=cap;
+        }
+      }
+    }
+
     render(full, partial);
     lastResult={ full, partial };
     status(`Terminé — ${full.length} entièrement dans la zone, ${partial.length} à cheval.`);
@@ -405,7 +427,12 @@ function paint(features, group, cls, color){
     L.geoJSON(f,{ style:{color,weight:1}, onEachFeature:(feat,lyr)=>{
       lyr.setStyle({fillColor:color, fillOpacity: cls==='full'?.35:.32, opacity:.9});
       const p=feat.properties;
-      lyr.bindPopup(`<b>${p.nom}</b>INSEE ${p.code}${p.population?` · ${p.population.toLocaleString('fr-FR')} hab.`:''}<br><span class="tag ${cls}">${cls==='full'?'entièrement dans la zone':'à cheval sur la limite'}</span>`);
+      let extra='';
+      if(cls==='partial'){
+        if(p.__maxMin!=null) extra=`<br>Bout de commune atteint en <b>≤ ${p.__maxMin} min</b>`;
+        else if(p.__cap) extra=`<br>Bout de commune atteint en <b>&gt; ${p.__cap} min</b>`;
+      }
+      lyr.bindPopup(`<b>${p.nom}</b>INSEE ${p.code}${p.population?` · ${p.population.toLocaleString('fr-FR')} hab.`:''}<br><span class="tag ${cls}">${cls==='full'?'entièrement dans la zone':'à cheval sur la limite'}</span>${extra}`);
     }}).addTo(group);
   }
 }
@@ -421,10 +448,28 @@ function render(full, partial){
 
 function fillList(id, feats){
   const el=$(id); el.innerHTML='';
-  [...feats].sort((a,b)=>a.properties.nom.localeCompare(b.properties.nom,'fr')).forEach(f=>{
-    const d=document.createElement('div');
-    const pop=f.properties.population?f.properties.population.toLocaleString('fr-FR'):'—';
-    d.innerHTML=`<span>${f.properties.nom}</span><span class="pop mono">${pop}</span>`;
+  const isPartial = id==='list-partial';
+  const arr=[...feats];
+  if(isPartial){
+    // tri par pire cas croissant (les « presque couvertes » d'abord ; les > plafond en dernier)
+    arr.sort((a,b)=>{
+      const ma=a.properties.__maxMin, mb=b.properties.__maxMin;
+      if(ma==null && mb==null) return a.properties.nom.localeCompare(b.properties.nom,'fr');
+      if(ma==null) return 1; if(mb==null) return -1;
+      return ma-mb || a.properties.nom.localeCompare(b.properties.nom,'fr');
+    });
+  } else {
+    arr.sort((a,b)=>a.properties.nom.localeCompare(b.properties.nom,'fr'));
+  }
+  arr.forEach(f=>{
+    const p=f.properties, d=document.createElement('div');
+    let right;
+    if(isPartial){
+      right = p.__maxMin!=null ? `≤ ${p.__maxMin} min` : (p.__cap ? `> ${p.__cap} min` : '—');
+    } else {
+      right = p.population ? p.population.toLocaleString('fr-FR') : '—';
+    }
+    d.innerHTML=`<span>${p.nom}</span><span class="pop mono">${right}</span>`;
     el.appendChild(d);
   });
 }
@@ -437,8 +482,12 @@ function wireUI(){
   }));
   $('export').addEventListener('click',()=>{
     if(!lastResult) return;
-    const rows=[['nom','code_insee','population','categorie']];
-    const add=(arr,cat)=>arr.forEach(f=>rows.push([f.properties.nom,f.properties.code,f.properties.population||'',cat]));
+    const rows=[['nom','code_insee','population','categorie','temps_max_min']];
+    const add=(arr,cat)=>arr.forEach(f=>{
+      const p=f.properties;
+      const tmax = cat==='a_cheval' ? (p.__maxMin!=null ? '<='+p.__maxMin : (p.__cap ? '>'+p.__cap : '')) : '';
+      rows.push([p.nom,p.code,p.population||'',cat,tmax]);
+    });
     add(lastResult.full,'entierement_dans_zone'); add(lastResult.partial,'a_cheval');
     const csv=rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
     const a=document.createElement('a');
